@@ -6,7 +6,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Mount the identify routes
 app.use('/', identifyRoutes);
 
 app.listen(PORT, () => {
