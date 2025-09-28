@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import type { IdentifyRequest , IdentifyResponse} from '../dtos/identify.dto.js';
-import type {ContactRow} from '../models/Contact.js'
+import {LinkPrecedence, type ContactRow} from '../models/Contact.js'
 import { sql } from '../models/db.js';
+import { all } from 'axios';
 interface InsertContactParams {
     email: string | undefined;
     phonenumber: string |undefined;
@@ -61,23 +62,34 @@ if (email && phoneNumber) {
     const emails = new Set<string>();
     const phoneNumbers = new Set<string>();
     const secondaryIds: number[] = [];
-    for (const c of contacts) {
-        if (c.email) emails.add(c.email);
-        if (c.phonenumber) phoneNumbers.add(c.phonenumber); 
-        if(c.linkprecedence =="secondary"){
-            secondaryIds.push(c.id)
-        }
+
+    
+    const {allContacts: allLinkedContacts,allPrimaryIds} = await getAllLinkedContacts(contacts)
+
+    const result = await getPrimaryId(allLinkedContacts,allPrimaryIds);
+
+    const updatedLinkedContacts = result.allRows
+
+    console.log("[performIdentifyLogic] updated contacts:", JSON.stringify(updatedLinkedContacts, null, 2));
+
+    const primaryId = result.primaryId
+
+    for (const c of updatedLinkedContacts) {
+    if (c.email) emails.add(c.email);
+    if (c.phonenumber) phoneNumbers.add(c.phonenumber); 
+    if(c.linkprecedence =="secondary"){
+        secondaryIds.push(c.id)
+    }
 
     }
 
- const primaryId = await getPrimaryId(contacts);
-
-const itemId = await handleContactInsertion(
-    email,
-    phoneNumber,
-    emails,
-    phoneNumbers,
-    primaryId !== -1 ? primaryId : undefined
+    // check if the input should be added to the db
+    const itemId = await handleContactInsertion(
+        email,
+        phoneNumber,
+        emails,
+        phoneNumbers,
+        primaryId !== -1 ? primaryId : undefined
 );
 
 const response: IdentifyResponse = {
@@ -94,80 +106,127 @@ const response: IdentifyResponse = {
     return response;
 }
 
-async function resolveMultiplePrimaries(
-    allRows: ContactRow[],
-    allPrimaryIds: number[]
-): Promise<number> {
-    try {
-        const idsInRows = allRows.map(c => c.id);
-        const missingIds = allPrimaryIds.filter(id => !idsInRows.includes(id));
 
-        if (missingIds.length > 0) {
-            const missingRowsResult: any = await sql`
-                SELECT *
-                FROM contacts
-                WHERE id = ANY(${missingIds}) 
-            `;
-            const missingRows: ContactRow[] = missingRowsResult.rows;
-            allRows = allRows.concat(missingRows);
-        }
+async function getAllLinkedContacts(contacts: ContactRow[]): Promise<{ allContacts: ContactRow[], allPrimaryIds: number[] }> {
+  try {
+    const allLinkedIds = new Set<number>();
+    const existingPrimaryIds = new Set<number>();
+    const missingIds = new Set<number>();
+    let updatedContacts: ContactRow[] = [];
 
-        allRows.sort((a, b) => new Date(a.createdat).getTime() - new Date(b.createdat).getTime());
-
-        if (allRows.length === 0 || !allRows[0]) return -1;
-
-        const firstPrimaryId = allRows[0].id;
-
-        for (let i = 1; i < allRows.length; i++) {
-            const row = allRows[i];
-            if (!row) continue;
-
-            if (row.linkprecedence == 'primary') {
-                await sql`
-                    UPDATE contacts
-                    SET linkprecedence = 'secondary',
-                        linkedid = ${firstPrimaryId}
-                    WHERE id = ${row.id};
-                `;
-            } else {
-                await sql`
-                    UPDATE contacts
-                    SET linkedid = ${firstPrimaryId}
-                    WHERE id = ${row.id};
-                `;
-            }
-        }
-
-        return firstPrimaryId;
-    } catch (err) {
-        console.error("[resolveMultiplePrimaries] Failed due to:", err);
-        throw { status: 500, message: "Failed to resolve multiple primaries", error: err };
+    for (const row of contacts) {
+      if (row.linkprecedence == "secondary") {
+        allLinkedIds.add(row.linkedid);
+      }
+      if (row.linkprecedence == "primary") {
+        existingPrimaryIds.add(row.id);
+      }
     }
+
+    for (const id of allLinkedIds) {
+      if (!existingPrimaryIds.has(id)) {    
+        missingIds.add(id);
+      }
+    }
+
+    console.log("[resolveMultiplePrimaries] Missing IDs:", [...missingIds]);
+
+    const updatedPrimaryIds: number[] = [...new Set([...existingPrimaryIds, ...missingIds])];
+    console.log(updatedPrimaryIds);
+
+    if (missingIds.size > 0) {
+      const missingRows: any = await sql`
+        SELECT *
+        FROM contacts
+        WHERE id = ANY(${[...missingIds]}) 
+      `;
+
+ 
+      updatedContacts = contacts.concat(missingRows);
+      console.log("[handleContactInsertion] missing rows :", JSON.stringify(missingRows, null, 2));
+    }
+
+    updatedContacts.sort((a, b) => new Date(a.createdat).getTime() - new Date(b.createdat).getTime());
+
+    return { allContacts: updatedContacts, allPrimaryIds: updatedPrimaryIds };
+  } catch (error) {
+    console.error("Error in getAllLinkedContacts:", error);
+    throw error;
+  }
 }
 
-async function getPrimaryId(contacts: ContactRow[]): Promise<number> {
+async function resolveMultiplePrimaries(
+  allRows: ContactRow[],
+): Promise<{ firstPrimaryId: number; updatedRows: ContactRow[] }> {
+  try {
+
+
+    if (allRows.length === 0 || !allRows[0]) return { firstPrimaryId: -1, updatedRows: [] };
+
+    const firstPrimaryId = allRows[0].id;
+    const updatedRows: ContactRow[] = [];
+
+    for (let i = 1; i < allRows.length; i++) {
+      const row = allRows[i];
+      if (!row) continue;
+
+      if (row.linkprecedence === 'primary') {
+        await sql`
+          UPDATE contacts
+          SET linkprecedence = 'secondary',
+              linkedid = ${firstPrimaryId},
+              updatedat = NOW()
+          WHERE id = ${row.id};
+        `;
+        row.linkprecedence = LinkPrecedence.SECONDARY;
+        row.linkedid = firstPrimaryId;
+        updatedRows.push(row);
+      }
+      else if(row.linkprecedence ==='secondary' || row.linkedid != firstPrimaryId){
+
+        await sql`
+          UPDATE contacts
+          SET linkedid = ${firstPrimaryId},
+            updatedat = NOW()
+          WHERE id = ${row.id};
+        `;
+        row.linkedid = firstPrimaryId;
+        updatedRows.push(row);
+
+      } 
+      else {
+
+        row.linkedid = firstPrimaryId;
+        updatedRows.push(row);
+      }
+    }
+
+    return { firstPrimaryId, updatedRows };
+  } catch (err) {
+    console.error("[resolveMultiplePrimaries] Failed due to:", err);
+    throw { status: 500, message: "Failed to resolve multiple primaries", error: err };
+  }
+}
+
+async function getPrimaryId(contacts: ContactRow[], allPrimaryIds: number[]): Promise<{ primaryId: number; allRows: ContactRow[] }> {
     try {
-        const primaryRowsIds = contacts
-            .filter(c => c.linkprecedence === 'primary')
-            .map(c => c.id);
+       
+        console.log("[getPrimaryId]  primary IDs found:", allPrimaryIds);
 
-        const secondaryLinkedIds = contacts
-            .filter(c => c.linkprecedence === 'secondary' && c.linkedid != null)
-            .map(c => c.linkedid!);
 
-        const allPrimaryIds = Array.from(new Set([...primaryRowsIds, ...secondaryLinkedIds]));
-
-        console.log("[getPrimaryId] Multiple primary IDs found:", allPrimaryIds);
+        let primaryId = -1;
+        let updatedContacts = contacts;
+        
         if (allPrimaryIds.length === 1) {
-            return allPrimaryIds[0]!;
+            primaryId =  allPrimaryIds[0]!;
         } else if (allPrimaryIds.length > 1) {
             console.log("[getPrimaryId] Multiple primary IDs found:", allPrimaryIds);
-            const primaryId = await resolveMultiplePrimaries(contacts, allPrimaryIds);
-            return primaryId;
+            const result = await resolveMultiplePrimaries(contacts);
+            primaryId = result.firstPrimaryId
+            updatedContacts = result.updatedRows
         }
 
-        console.log("[getPrimaryId] No primary IDs found.");
-        return -1;
+        return {primaryId,allRows:updatedContacts};
     } catch (err) {
         console.error("[getPrimaryId] Failed due to:", err);
         throw { status: 500, message: "Failed to get primary ID", error: err };
@@ -183,10 +242,14 @@ async function handleContactInsertion(
     primaryId: number | undefined
 ): Promise<number> {
     try {
-        const emailExists = inputEmail ? emailsSet.has(inputEmail) : false;
-        const phoneExists = inputPhone ? phoneNumbersSet.has(inputPhone) : false;
 
-        if (!emailExists && !phoneExists) {
+    const  hasEmailInput  = inputEmail!=null
+        const hasPhoneInput = inputPhone!=null
+        const emailExists = hasEmailInput && emailsSet.has(inputEmail);
+        const phoneExists = hasPhoneInput && phoneNumbersSet.has(inputPhone);
+
+
+        if ((!emailExists && !phoneExists) && (hasEmailInput && hasPhoneInput)) {
             console.log("[handleContactInsertion] Neither email nor phone exists → inserting as primary");
             const newId = await insertContactToDB({
                 email: inputEmail,
@@ -195,7 +258,7 @@ async function handleContactInsertion(
                 linkedid: undefined
             });
             return newId;
-        } else if((!emailExists && phoneExists) || (emailExists && !phoneExists)){
+        } else if((!emailExists && phoneExists && hasEmailInput) || (emailExists && !phoneExists && hasPhoneInput)){
             console.log("[handleContactInsertion] Input exists → inserting as secondary linked to:", primaryId);
             const newId = await insertContactToDB({
                 email: inputEmail,
@@ -206,7 +269,7 @@ async function handleContactInsertion(
             return newId;
         }
         else{
-            console.log("[handleContactInsertion] Both email and phone exist → skipping insertion");
+            console.log("[handleContactInsertion] input exist in db -> skipping insertion");
             return -1;
         }
 
