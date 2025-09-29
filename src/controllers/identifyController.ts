@@ -11,99 +11,109 @@ interface InsertContactParams {
 }
 
 async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResponse> {
-    console.log("[performIdentifyLogic] Received request:", data);
+    try {
+        console.log("[performIdentifyLogic] Received request:", data);
 
-    if (typeof data !== 'object' || data === null) {
-        console.error("[performIdentifyLogic] Invalid input: not an object");
-        throw { status: 400, message: 'Invalid input: request body must be an object' };
+        if (typeof data !== 'object' || data === null) {
+            console.error("[performIdentifyLogic] Invalid input: not an object");
+            throw { status: 400, message: 'Invalid input: request body must be an object' };
+        }
+
+        const { email, phoneNumber } = data;
+
+        if (!email && !phoneNumber) {
+            throw { status: 400, message: "Either email or phoneNumber must be provided" };
+        }
+
+        let contacts: ContactRow[] = [];
+
+        if (email && phoneNumber) {
+            console.log("[performIdentifyLogic] Looking up by both email and phone:", email, phoneNumber);
+            const result: any = await sql`
+                SELECT *
+                FROM contacts
+                WHERE email = ${email} OR phonenumber = ${phoneNumber}
+                ORDER BY createdat
+            `;
+            contacts = result as ContactRow[];
+        } else if (email) {
+            console.log("[performIdentifyLogic] Looking up by email:", email);
+            const result: any = await sql`
+                SELECT *
+                FROM contacts
+                WHERE email = ${email}
+                ORDER BY createdat
+            `;
+            contacts = result as ContactRow[];
+        } else if (phoneNumber) {
+            console.log("[performIdentifyLogic] Looking up by phone number:", phoneNumber);
+            const result: any = await sql`
+                SELECT *
+                FROM contacts
+                WHERE phonenumber = ${phoneNumber}
+                ORDER BY createdat
+            `;
+            contacts = result as ContactRow[];
+        }
+
+        console.log("[performIdentifyLogic] Found contacts:", JSON.stringify(contacts, null, 2));
+
+        const emails = new Set<string>();
+        const phoneNumbers = new Set<string>();
+        const secondaryIds: number[] = [];
+
+        const { allContacts: allLinkedContacts, allPrimaryIds } = await getAllLinkedContacts(contacts);
+
+        console.log("[performIdentifyLogic] all linked contacts:", JSON.stringify(allLinkedContacts, null, 2));
+
+
+        const result = await getPrimaryId(allLinkedContacts, allPrimaryIds);
+
+        const updatedLinkedContacts = result.allRows;
+        const primaryId = result.primaryId;
+
+        console.log("[performIdentifyLogic] Updated linked contacts:", JSON.stringify(updatedLinkedContacts, null, 2));
+
+        for (const contact of updatedLinkedContacts) {
+            if (contact.email) {
+                emails.add(contact.email);
+            }
+
+            console.log("phone number");
+
+            if (contact.phonenumber) {
+                phoneNumbers.add(contact.phonenumber);
+                console.log("phone number", contact.phonenumber);
+            }
+
+            if (contact.linkprecedence === LinkPrecedence.SECONDARY) {
+                secondaryIds.push(contact.id);
+            }
+        }
+
+        const itemId = await handleContactInsertion(
+            email,
+            phoneNumber,
+            emails,
+            phoneNumbers,
+            primaryId !== -1 ? primaryId : undefined
+        );
+
+        const response: IdentifyResponse = {
+            contact: {
+                primaryContactId: primaryId !== -1 ? primaryId : itemId,
+                emails: Array.from(emails),
+                phoneNumbers: Array.from(phoneNumbers),
+                secondaryContactIds: secondaryIds
+            }
+        };
+
+        console.log("[performIdentifyLogic] Returning response:", response);
+        return response;
+    } catch (error) {
+        console.error("[performIdentifyLogic] Error:", error);
+        throw error;
     }
-const { email, phoneNumber } = data;
-
-    if (!email && !phoneNumber) {
-        throw { status: 400, message: "Either email or phoneNumber must be provided" };
-    }
-
-let contacts: ContactRow[] = [];
-
-if (email && phoneNumber) {
-    console.log("[performIdentifyLogic] Looking up by both email and phone:", email, phoneNumber);
-    const result: any = await sql`
-        SELECT *
-        FROM contacts
-        WHERE email = ${email} OR phonenumber = ${phoneNumber}
-        ORDER BY createdat
-    `;
-    contacts = result;
-} else if (email) {
-    console.log("[performIdentifyLogic] Looking up by email:", email);
-    const result: any = await sql`
-        SELECT *
-        FROM contacts
-        WHERE email = ${email}
-        ORDER BY createdat
-    `;
-    contacts = result;
-} else if (phoneNumber) {
-    console.log("[performIdentifyLogic] Looking up by phone number:", phoneNumber);
-    const result: any = await sql`
-        SELECT *
-        FROM contacts
-        WHERE phonenumber = ${phoneNumber}
-        ORDER BY createdat
-    `;
-    contacts = result;
-}
-
-
-
-
-    console.log("[performIdentifyLogic] Found contacts:", JSON.stringify(contacts, null, 2));
-
-    const emails = new Set<string>();
-    const phoneNumbers = new Set<string>();
-    const secondaryIds: number[] = [];
-
-    
-    const {allContacts: allLinkedContacts,allPrimaryIds} = await getAllLinkedContacts(contacts)
-
-    const result = await getPrimaryId(allLinkedContacts,allPrimaryIds);
-
-    const updatedLinkedContacts = result.allRows
-
-    console.log("[performIdentifyLogic] updated contacts:", JSON.stringify(updatedLinkedContacts, null, 2));
-
-    const primaryId = result.primaryId
-
-    for (const c of updatedLinkedContacts) {
-    if (c.email) emails.add(c.email);
-    if (c.phonenumber) phoneNumbers.add(c.phonenumber); 
-    if(c.linkprecedence =="secondary"){
-        secondaryIds.push(c.id)
-    }
-
-    }
-
-    // check if the input should be added to the db
-    const itemId = await handleContactInsertion(
-        email,
-        phoneNumber,
-        emails,
-        phoneNumbers,
-        primaryId !== -1 ? primaryId : undefined
-);
-
-const response: IdentifyResponse = {
-    contact: {
-        primaryContactId: primaryId !== -1 ? primaryId : itemId,
-        emails: Array.from(emails),
-        phoneNumbers: Array.from(phoneNumbers),
-        secondaryContactIds: secondaryIds
-    }
-};
-
-
-    console.log("[performIdentifyLogic] Returning response:", response);
-    return response;
 }
 
 
@@ -112,13 +122,13 @@ async function getAllLinkedContacts(contacts: ContactRow[]): Promise<{ allContac
     const allLinkedIds = new Set<number>();
     const existingPrimaryIds = new Set<number>();
     const missingIds = new Set<number>();
-    let updatedContacts: ContactRow[] = [];
+    let updatedContacts: ContactRow[] = contacts;
 
     for (const row of contacts) {
-      if (row.linkprecedence == "secondary") {
-        allLinkedIds.add(row.linkedid);
+      if (row.linkprecedence == LinkPrecedence.SECONDARY) {
+        allLinkedIds.add(row.linkedid); 
       }
-      if (row.linkprecedence == "primary") {
+      if (row.linkprecedence == LinkPrecedence.PRIMARY) {
         existingPrimaryIds.add(row.id);
       }
     }
@@ -135,13 +145,13 @@ async function getAllLinkedContacts(contacts: ContactRow[]): Promise<{ allContac
     console.log(updatedPrimaryIds);
 
     if (missingIds.size > 0) {
-      const missingRows: any = await sql`
+      const missingRowsResult: any = await sql`
         SELECT *
         FROM contacts
         WHERE id = ANY(${[...missingIds]}) 
       `;
 
- 
+      const missingRows = missingRowsResult as ContactRow[]
       updatedContacts = contacts.concat(missingRows);
       console.log("[handleContactInsertion] missing rows :", JSON.stringify(missingRows, null, 2));
     }
@@ -170,24 +180,24 @@ async function resolveMultiplePrimaries(
       const row = allRows[i];
       if (!row) continue;
 
-      if (row.linkprecedence === 'primary') {
+      if (row.linkprecedence === LinkPrecedence.PRIMARY) {
         await sql`
           UPDATE contacts
-          SET linkprecedence = 'secondary',
-              linkedid = ${firstPrimaryId},
-              updatedat = NOW()
+          SET linkPrecedence = 'secondary',
+              linkedId = ${firstPrimaryId},
+              updatedAt = NOW()
           WHERE id = ${row.id};
         `;
         row.linkprecedence = LinkPrecedence.SECONDARY;
         row.linkedid = firstPrimaryId;
         updatedRows.push(row);
       }
-      else if(row.linkprecedence ==='secondary' || row.linkedid != firstPrimaryId){
+      else if(row.linkprecedence ===LinkPrecedence.SECONDARY || row.linkedid != firstPrimaryId){
 
         await sql`
           UPDATE contacts
-          SET linkedid = ${firstPrimaryId},
-            updatedat = NOW()
+          SET linkedId = ${firstPrimaryId},
+            updatedAt = NOW()
           WHERE id = ${row.id};
         `;
         row.linkedid = firstPrimaryId;
@@ -247,9 +257,13 @@ async function handleContactInsertion(
         const hasPhoneInput = inputPhone!=null
         const emailExists = hasEmailInput && emailsSet.has(inputEmail);
         const phoneExists = hasPhoneInput && phoneNumbersSet.has(inputPhone);
+        
+        console.log([...phoneNumbersSet])
+        console.log(hasEmailInput,hasPhoneInput)
+        console.log(phoneNumbersSet.has(inputPhone!))
+        console.log(emailExists,phoneExists)    
 
-
-        if ((!emailExists && !phoneExists) && (hasEmailInput && hasPhoneInput)) {
+        if ((!emailExists && !phoneExists) && (hasEmailInput || hasPhoneInput)) {
             console.log("[handleContactInsertion] Neither email nor phone exists → inserting as primary");
             const newId = await insertContactToDB({
                 email: inputEmail,
@@ -284,7 +298,7 @@ async function insertContactToDB(params: InsertContactParams): Promise<number> {
         const { email, phonenumber, linkprecedence, linkedid } = params;
 
         const result: any = await sql`
-            INSERT INTO contacts (email, phonenumber, linkprecedence, linkedid)
+            INSERT INTO contacts (email, phoneNumber, linkPrecedence, linkedId)
             VALUES (
                 ${email ?? null},
                 ${phonenumber ?? null},
