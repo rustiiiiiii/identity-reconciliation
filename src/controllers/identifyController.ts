@@ -27,17 +27,29 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
         const hasEmail = email != null && email.trim() !== "";
         const hasPhone = phoneNumber != null && phoneNumber.trim() !== "";
 
+        console.log(hasEmail,hasPhone)
+
         if (!hasEmail && !hasPhone) {
           throw { status: 400, message: "Either email or phoneNumber must be provided" };
         }
 
-        if (hasEmail) {
+        if (email != null) {
+
+          if (email.trim() === "") {
+            throw { status: 400, message: "Email cannot be an empty string" };
+          }
+
           if (!emailRegex.test(email)) {
             throw { status: 400, message: "Invalid email format" };
           }
         }
 
-        if (hasPhone) {
+        if (phoneNumber != null) {
+
+          if (phoneNumber.trim() === "") {
+            throw { status: 400, message: "Phone number cannot be an empty string" };
+         }
+
           if (!isValidPhoneNumber(phoneNumber)) {
             throw { status: 400, message: "Invalid phone number format" };
           }
