@@ -164,7 +164,17 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
             phoneNumbers,
             primaryId !== -1 ? primaryId : undefined
         );
-
+        
+        if(hasEmail){
+          emails.add(email)
+        }
+        if(hasPhone){
+          phoneNumbers.add(phoneNumber)
+        }
+        
+        if(primaryId!==-1 && itemId!== -1 ){ // add the secondary contact id that is getting inserted to db
+          secondaryIds.push(itemId)
+        }
         const response: IdentifyResponse = {
             contact: {
                 primaryContactId: primaryId !== -1 ? primaryId : itemId,
