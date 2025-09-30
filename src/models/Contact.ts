@@ -7,10 +7,10 @@ export enum LinkPrecedence {
 export interface ContactRow {
     id: number;
     email?: string;
-    phonenumber?: string;
-    linkedid: number;
-    linkprecedence: LinkPrecedence;
-    createdat: Date;
-    updatedat: Date;
-    deletedat?: Date;
+    phoneNumber?: string;
+    linkedId: number;
+    linkPrecedence: LinkPrecedence;
+    createdAt: Date;
+    updatedAt: Date;
+    deletedAt?: Date;
 }

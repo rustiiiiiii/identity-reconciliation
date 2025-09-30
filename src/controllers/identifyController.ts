@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import type { IdentifyRequest , IdentifyResponse} from '../dtos/identify.dto.js';
 import {LinkPrecedence, type ContactRow} from '../models/Contact.js'
 import { sql } from '../models/db.js';
-import { all } from 'axios';
 interface InsertContactParams {
     email: string | undefined;
     phonenumber: string |undefined;
@@ -32,8 +31,8 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
             const result: any = await sql`
                 SELECT *
                 FROM contacts
-                WHERE email = ${email} OR phonenumber = ${phoneNumber}
-                ORDER BY createdat
+                WHERE email = ${email} OR "phoneNumber" = ${phoneNumber}
+                ORDER BY "createdAt"
             `;
             contacts = result as ContactRow[];
         } else if (email) {
@@ -42,7 +41,7 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
                 SELECT *
                 FROM contacts
                 WHERE email = ${email}
-                ORDER BY createdat
+                ORDER BY "createdAt"
             `;
             contacts = result as ContactRow[];
         } else if (phoneNumber) {
@@ -50,8 +49,8 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
             const result: any = await sql`
                 SELECT *
                 FROM contacts
-                WHERE phonenumber = ${phoneNumber}
-                ORDER BY createdat
+                WHERE "phoneNumber" = ${phoneNumber}
+                ORDER BY "createdAt"
             `;
             contacts = result as ContactRow[];
         }
@@ -81,12 +80,12 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
 
             console.log("phone number");
 
-            if (contact.phonenumber) {
-                phoneNumbers.add(contact.phonenumber);
-                console.log("phone number", contact.phonenumber);
+            if (contact.phoneNumber) {
+                phoneNumbers.add(contact.phoneNumber);
+                console.log("phone number", contact.phoneNumber);
             }
 
-            if (contact.linkprecedence === LinkPrecedence.SECONDARY) {
+            if (contact.linkPrecedence === LinkPrecedence.SECONDARY) {
                 secondaryIds.push(contact.id);
             }
         }
@@ -125,10 +124,10 @@ async function getAllLinkedContacts(contacts: ContactRow[]): Promise<{ allContac
     let updatedContacts: ContactRow[] = contacts;
 
     for (const row of contacts) {
-      if (row.linkprecedence == LinkPrecedence.SECONDARY) {
-        allLinkedIds.add(row.linkedid); 
+      if (row.linkPrecedence == LinkPrecedence.SECONDARY) {
+        allLinkedIds.add(row.linkedId); 
       }
-      if (row.linkprecedence == LinkPrecedence.PRIMARY) {
+      if (row.linkPrecedence == LinkPrecedence.PRIMARY) {
         existingPrimaryIds.add(row.id);
       }
     }
@@ -156,7 +155,7 @@ async function getAllLinkedContacts(contacts: ContactRow[]): Promise<{ allContac
       console.log("[handleContactInsertion] missing rows :", JSON.stringify(missingRows, null, 2));
     }
 
-    updatedContacts.sort((a, b) => new Date(a.createdat).getTime() - new Date(b.createdat).getTime());
+    updatedContacts.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
     return { allContacts: updatedContacts, allPrimaryIds: updatedPrimaryIds };
   } catch (error) {
@@ -176,37 +175,39 @@ async function resolveMultiplePrimaries(
     const firstPrimaryId = allRows[0].id;
     const updatedRows: ContactRow[] = [];
 
+    updatedRows.push(allRows[0]) // add the 0th row (main primary row)
+    // the 0th item will be the main primary item as we are choosing the older primary item.
     for (let i = 1; i < allRows.length; i++) {
       const row = allRows[i];
       if (!row) continue;
 
-      if (row.linkprecedence === LinkPrecedence.PRIMARY) {
+      if (row.linkPrecedence === LinkPrecedence.PRIMARY) {
         await sql`
           UPDATE contacts
-          SET linkPrecedence = 'secondary',
-              linkedId = ${firstPrimaryId},
-              updatedAt = NOW()
+          SET "linkPrecedence" = 'secondary',
+              "linkedId" = ${firstPrimaryId},
+              "updatedAt" = NOW()
           WHERE id = ${row.id};
         `;
-        row.linkprecedence = LinkPrecedence.SECONDARY;
-        row.linkedid = firstPrimaryId;
+        row.linkPrecedence = LinkPrecedence.SECONDARY;
+        row.linkedId = firstPrimaryId;
         updatedRows.push(row);
       }
-      else if(row.linkprecedence ===LinkPrecedence.SECONDARY || row.linkedid != firstPrimaryId){
+      else if(row.linkPrecedence ===LinkPrecedence.SECONDARY || row.linkedId != firstPrimaryId){
 
         await sql`
           UPDATE contacts
-          SET linkedId = ${firstPrimaryId},
-            updatedAt = NOW()
+          SET "linkedId" = ${firstPrimaryId},
+            "updatedAt" = NOW()
           WHERE id = ${row.id};
         `;
-        row.linkedid = firstPrimaryId;
+        row.linkedId = firstPrimaryId;
         updatedRows.push(row);
 
       } 
       else {
 
-        row.linkedid = firstPrimaryId;
+        row.linkedId = firstPrimaryId;
         updatedRows.push(row);
       }
     }
@@ -298,7 +299,7 @@ async function insertContactToDB(params: InsertContactParams): Promise<number> {
         const { email, phonenumber, linkprecedence, linkedid } = params;
 
         const result: any = await sql`
-            INSERT INTO contacts (email, phoneNumber, linkPrecedence, linkedId)
+            INSERT INTO contacts (email, "phoneNumber", "linkPrecedence", "linkedId")
             VALUES (
                 ${email ?? null},
                 ${phonenumber ?? null},
