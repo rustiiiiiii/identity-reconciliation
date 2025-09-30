@@ -1,7 +1,6 @@
 import type { Request, Response } from 'express';
 import type { IdentifyRequest , IdentifyResponse} from '../dtos/identify.dto.js';
 import {LinkPrecedence, type ContactRow, type MatchedRecord} from '../models/Contact.js'
-import { isValidPhoneNumber } from 'libphonenumber-js';
 import { sql } from '../models/db.js';
 interface InsertContactParams {
     email: string | undefined;
@@ -23,6 +22,7 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
         const { email, phoneNumber } = data;
 
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const phoneRegex = /^\+?\d{6,15}$/;
 
         const hasEmail = email != null && email.trim() !== "";
         const hasPhone = phoneNumber != null && phoneNumber.trim() !== "";
@@ -50,7 +50,7 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
             throw { status: 400, message: "Phone number cannot be an empty string" };
          }
 
-          if (!isValidPhoneNumber(phoneNumber)) {
+          if (!phoneRegex.test(phoneNumber)) {
             throw { status: 400, message: "Invalid phone number format" };
           }
         }
