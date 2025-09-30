@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import type { IdentifyRequest , IdentifyResponse} from '../dtos/identify.dto.js';
-import {LinkPrecedence, type ContactRow} from '../models/Contact.js'
+import {LinkPrecedence, type ContactRow, type MatchedRecord} from '../models/Contact.js'
 import { sql } from '../models/db.js';
 interface InsertContactParams {
     email: string | undefined;
@@ -13,6 +13,7 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
     try {
         console.log("[performIdentifyLogic] Received request:", data);
 
+        
         if (typeof data !== 'object' || data === null) {
             console.error("[performIdentifyLogic] Invalid input: not an object");
             throw { status: 400, message: 'Invalid input: request body must be an object' };
@@ -25,48 +26,85 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
         }
 
         let contacts: ContactRow[] = [];
+        let primaryIdsResult;
 
         if (email && phoneNumber) {
             console.log("[performIdentifyLogic] Looking up by both email and phone:", email, phoneNumber);
-            const result: any = await sql`
-                SELECT *
-                FROM contacts
-                WHERE email = ${email} OR "phoneNumber" = ${phoneNumber}
-                ORDER BY "createdAt"
+            const result: any  = await sql`
+                WITH MatchedRecords AS (
+                    SELECT 
+                        id,
+                        "linkedId"
+                    FROM 
+                        contacts  
+                    WHERE 
+                        email = ${email} OR "phoneNumber" = ${phoneNumber}
+                )
+                SELECT DISTINCT 
+                    COALESCE("linkedId", id) AS linked_identifier
+                FROM 
+                    MatchedRecords;
+
             `;
-            contacts = result as ContactRow[];
+            primaryIdsResult = result as MatchedRecord[];
         } else if (email) {
             console.log("[performIdentifyLogic] Looking up by email:", email);
-            const result: any = await sql`
-                SELECT *
-                FROM contacts
-                WHERE email = ${email}
-                ORDER BY "createdAt"
+            const result: any  = await sql`
+               WITH MatchedRecords AS (
+                  SELECT 
+                      id,
+                      "linkedId"
+                  FROM 
+                      contacts  
+                  WHERE 
+                      email = ${email}
+                    )
+                SELECT DISTINCT 
+                    COALESCE("linkedId", id) AS linked_identifier
+                FROM 
+                    MatchedRecords;
+
             `;
-            contacts = result as ContactRow[];
+            primaryIdsResult = result as MatchedRecord[];
         } else if (phoneNumber) {
             console.log("[performIdentifyLogic] Looking up by phone number:", phoneNumber);
             const result: any = await sql`
-                SELECT *
-                FROM contacts
-                WHERE "phoneNumber" = ${phoneNumber}
-                ORDER BY "createdAt"
+                WITH MatchedRecords AS (
+                    SELECT 
+                        id,
+                        "linkedId"
+                    FROM 
+                        contacts  
+                    WHERE 
+                        "phoneNumber" = ${phoneNumber}
+                )
+                SELECT DISTINCT 
+                    COALESCE("linkedId", id) AS linked_identifier
+                FROM 
+                    MatchedRecords;
+
             `;
-            contacts = result as ContactRow[];
+             primaryIdsResult = result as MatchedRecord[];
         }
 
-        console.log("[performIdentifyLogic] Found contacts:", JSON.stringify(contacts, null, 2));
+        const listOfPrimaryIds: number[] = primaryIdsResult && primaryIdsResult.length > 0
+        ? primaryIdsResult.map((row) => {
+            const value = row.linked_identifier;
+            return Number(value);
+          })
+        : [];
+        console.log("[performIdentifyLogic] Found primary ids:", JSON.stringify(listOfPrimaryIds, null, 2));
 
         const emails = new Set<string>();
         const phoneNumbers = new Set<string>();
         const secondaryIds: number[] = [];
 
-        const { allContacts: allLinkedContacts, allPrimaryIds } = await getAllLinkedContacts(contacts);
+        const { allContacts: allLinkedContacts } = await getAllLinkedContacts(listOfPrimaryIds);
 
         console.log("[performIdentifyLogic] all linked contacts:", JSON.stringify(allLinkedContacts, null, 2));
 
 
-        const result = await getPrimaryId(allLinkedContacts, allPrimaryIds);
+        const result = await getPrimaryId(allLinkedContacts, listOfPrimaryIds);
 
         const updatedLinkedContacts = result.allRows;
         const primaryId = result.primaryId;
@@ -116,48 +154,34 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
 }
 
 
-async function getAllLinkedContacts(contacts: ContactRow[]): Promise<{ allContacts: ContactRow[], allPrimaryIds: number[] }> {
+async function getAllLinkedContacts(allPrimaryIds: number[]): Promise<{ allContacts: ContactRow[]}> {
   try {
     const allLinkedIds = new Set<number>();
     const existingPrimaryIds = new Set<number>();
     const missingIds = new Set<number>();
-    let updatedContacts: ContactRow[] = contacts;
+    let updatedContacts: ContactRow[] = [];
 
-    for (const row of contacts) {
-      if (row.linkPrecedence == LinkPrecedence.SECONDARY) {
-        allLinkedIds.add(row.linkedId); 
-      }
-      if (row.linkPrecedence == LinkPrecedence.PRIMARY) {
-        existingPrimaryIds.add(row.id);
-      }
-    }
 
-    for (const id of allLinkedIds) {
-      if (!existingPrimaryIds.has(id)) {    
-        missingIds.add(id);
-      }
-    }
 
     console.log("[resolveMultiplePrimaries] Missing IDs:", [...missingIds]);
 
     const updatedPrimaryIds: number[] = [...new Set([...existingPrimaryIds, ...missingIds])];
     console.log(updatedPrimaryIds);
 
-    if (missingIds.size > 0) {
-      const missingRowsResult: any = await sql`
+    if (allPrimaryIds.length > 0) {
+      const allLinkedRowsResult: any = await sql`
         SELECT *
         FROM contacts
-        WHERE id = ANY(${[...missingIds]}) 
+        WHERE id = ANY(${[...allPrimaryIds]}) OR "linkedId" = ANY(${[...allPrimaryIds]});
       `;
 
-      const missingRows = missingRowsResult as ContactRow[]
-      updatedContacts = contacts.concat(missingRows);
-      console.log("[handleContactInsertion] missing rows :", JSON.stringify(missingRows, null, 2));
+      updatedContacts = allLinkedRowsResult as ContactRow[]
+      console.log("[handleContactInsertion] all linked  rows :", JSON.stringify(allLinkedRowsResult, null, 2));
     }
 
     updatedContacts.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
-    return { allContacts: updatedContacts, allPrimaryIds: updatedPrimaryIds };
+    return { allContacts: updatedContacts};
   } catch (error) {
     console.error("Error in getAllLinkedContacts:", error);
     throw error;
@@ -225,7 +249,7 @@ async function getPrimaryId(contacts: ContactRow[], allPrimaryIds: number[]): Pr
         console.log("[getPrimaryId]  primary IDs found:", allPrimaryIds);
 
 
-        let primaryId = -1;
+        let primaryId = -1; // if there are no primary ids for the input req
         let updatedContacts = contacts;
         
         if (allPrimaryIds.length === 1) {
