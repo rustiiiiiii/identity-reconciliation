@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import type { IdentifyRequest , IdentifyResponse} from '../dtos/identify.dto.js';
 import {LinkPrecedence, type ContactRow, type MatchedRecord} from '../models/Contact.js'
+import { isValidPhoneNumber } from 'libphonenumber-js';
 import { sql } from '../models/db.js';
 interface InsertContactParams {
     email: string | undefined;
@@ -21,9 +22,27 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
 
         const { email, phoneNumber } = data;
 
-        if (!email && !phoneNumber) {
-            throw { status: 400, message: "Either email or phoneNumber must be provided" };
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+        const hasEmail = email != null && email.trim() !== "";
+        const hasPhone = phoneNumber != null && phoneNumber.trim() !== "";
+
+        if (!hasEmail && !hasPhone) {
+          throw { status: 400, message: "Either email or phoneNumber must be provided" };
         }
+
+        if (hasEmail) {
+          if (!emailRegex.test(email)) {
+            throw { status: 400, message: "Invalid email format" };
+          }
+        }
+
+        if (hasPhone) {
+          if (!isValidPhoneNumber(phoneNumber)) {
+            throw { status: 400, message: "Invalid phone number format" };
+          }
+        }
+
 
         let contacts: ContactRow[] = [];
         let primaryIdsResult;
@@ -116,11 +135,9 @@ async function performIdentifyLogic(data: IdentifyRequest): Promise<IdentifyResp
                 emails.add(contact.email);
             }
 
-            console.log("phone number");
 
             if (contact.phoneNumber) {
                 phoneNumbers.add(contact.phoneNumber);
-                console.log("phone number", contact.phoneNumber);
             }
 
             if (contact.linkPrecedence === LinkPrecedence.SECONDARY) {
@@ -278,8 +295,8 @@ async function handleContactInsertion(
 ): Promise<number> {
     try {
 
-    const  hasEmailInput  = inputEmail!=null
-        const hasPhoneInput = inputPhone!=null
+        const hasEmailInput = inputEmail != null && inputEmail.trim() !== "";
+        const hasPhoneInput = inputPhone != null && inputPhone.trim() !== "";
         const emailExists = hasEmailInput && emailsSet.has(inputEmail);
         const phoneExists = hasPhoneInput && phoneNumbersSet.has(inputPhone);
         
@@ -346,6 +363,13 @@ export const identifyHandler = async (req: Request, res: Response) => {
     const result = await performIdentifyLogic(req.body);
     res.json(result);
   } catch (err: any) {
-    res.status(err.status ?? 500).json({ message: err.message ?? 'Internal server error' });
+    const status = err.status ?? 500;
+    let message = err.message;
+
+    if (status === 500 || !message) {
+      message = 'Internal server error';
+    }
+
+    res.status(status).json({ message });
   }
 };
